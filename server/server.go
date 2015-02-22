@@ -82,7 +82,7 @@ func main() {
 
 	fmt.Println("Starting server at ", addr)
 
-	server := Server{make(chan []byte), make([]Client, 1)}
+	server := Server{make(chan []byte), []Client{}}
 
 	http.HandleFunc("/", server.Handler)
 	go server.broadcaster()
