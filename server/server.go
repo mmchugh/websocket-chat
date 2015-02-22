@@ -12,68 +12,80 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-var broadcast chan []byte
-var clients []chan []byte
+type Client struct {
+	receive chan []byte
+	broadcast chan []byte
+	conn *websocket.Conn
+}
 
-func broadcaster() {
+type Server struct {
+	broadcast chan []byte
+	clients []Client
+}
+
+
+func (server Server) broadcaster() {
 	for {
-		message:=  <-broadcast
-		fmt.Println(string(message))
-		for index, channel := range clients {
+		message :=  <-server.broadcast
+		fmt.Println("< ", string(message))
+		for index, client := range server.clients {
 			select {
-			case channel <- message:
+			case client.receive <- message:
 			default:
 				// remove the bad client
-				clients = append(clients[:index], clients[index+1:]...)
-				close(channel)
+				server.clients = append(server.clients[:index], server.clients[index+1:]...)
+				close(client.receive)
 			}
 		}
 	}
 }
 
-func client_read(conn *websocket.Conn) {
-	for {
-		_, message, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-		broadcast <- message
-	}
-	conn.Close()
-}
-
-func client_write(conn *websocket.Conn, messages chan []byte) {
-	for message := range messages {
-		err := conn.WriteMessage(websocket.TextMessage, message)
-		if err != nil {
-			break
-		}
-	}
-	conn.Close()
-}
-
-func wsHandler(write http.ResponseWriter, read *http.Request) {
+func (server Server) Handler(write http.ResponseWriter, read *http.Request) {
 	conn, err := upgrader.Upgrade(write, read, nil)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	client := make(chan []byte)
-	clients = append(clients, client)
-	go client_read(conn)
-	client_write(conn, client)
+	client := Client{make(chan []byte), server.broadcast, conn}
+
+	server.clients = append(server.clients, client)
+
+	go client.read()
+	client.write()
+}
+
+func (client Client) read() {
+	for {
+		_, message, err := client.conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		client.broadcast <- message
+	}
+	client.conn.Close()
+}
+
+func (client Client) write() {
+	for message := range client.receive {
+		err := client.conn.WriteMessage(websocket.TextMessage, message)
+		if err != nil {
+			break
+		}
+	}
+	client.conn.Close()
 }
 
 func main() {
 	addr := "localhost:5678"
 
-	http.HandleFunc("/", wsHandler)
 
 	fmt.Println("Starting server at ", addr)
 
-	broadcast = make(chan []byte)
-	go broadcaster()
+	server := Server{make(chan []byte), make([]Client, 1)}
+
+	http.HandleFunc("/", server.Handler)
+	go server.broadcaster()
 
 	err := http.ListenAndServe(addr, nil)
 	if err != nil {
